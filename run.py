@@ -47,7 +47,7 @@ class RunWords(object):
             with open(os.path.join(self.load_param_dir, 'recog_params.save'), 'rb') as f:
                 self.vb.recognition_model.set_param_values(cPickle.load(f))
 
-    def load_data(self, dataset, train_prop, restrict_min_length, restrict_max_length):
+    def load_data(self, dataset, train_prop, restrict_min_length, restrict_max_length, load_batch_size=5000000):
 
         folder = '../_datasets/' + dataset
 
@@ -76,10 +76,22 @@ class RunWords(object):
 
         L = np.array([len(s) for s in words])
 
-        mask = L[:, None] > np.arange(max(L))
+        max_L = max(L)
 
-        words_to_return = np.full(mask.shape, -1, dtype='int')
-        words_to_return[mask] = np.concatenate(words)
+        word_arrays = []
+
+        for i in range(0, len(L), load_batch_size):
+
+            L_i = L[i: i+load_batch_size]
+
+            word_array = np.full((len(L_i), max_L), -1, dtype='int')
+            word_array[L_i.reshape((L_i.shape[0], 1)) > np.arange(max(L))] = np.concatenate(words[i: i+load_batch_size])
+
+            word_arrays.append(word_array)
+
+            del L_i, word_array
+
+        words_to_return = np.concatenate(word_arrays)
 
         training_mask = np.random.rand(len(words_to_return)) < train_prop
 
@@ -163,8 +175,8 @@ class RunWords(object):
         print('='*10)
 
     def train(self, n_iter, batch_size, num_samples, grad_norm_constraint=None, update=adam, update_kwargs=None,
-              warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0,
-              val_print_gen=5, save_params_every=None):
+              warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0, val_print_gen=5,
+              save_params_every=None):
 
         if self.pre_trained:
             with open(os.path.join(self.load_param_dir, 'updates.save'), 'rb') as f:
