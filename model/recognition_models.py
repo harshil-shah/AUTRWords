@@ -134,7 +134,7 @@ class RecMLP(RecModel):
     #
     #     l_current = DenseLayer(l_in, num_units=self.nn_hid_units, nonlinearity=None, b=None)
     #
-    #     # skip_layers = []
+    #     skip_layers = [l_current]
     #
     #     for h in range(self.nn_depth):
     #
@@ -143,15 +143,15 @@ class RecMLP(RecModel):
     #
     #         l_sum = NonlinearityLayer(ElemwiseSumLayer([l_h_x, l_h_h]), nonlinearity=self.nn_hid_nonlinearity)
     #
-    #         # skip_layers.append(l_sum)
+    #         skip_layers.append(l_sum)
     #
     #         l_current = l_sum
     #
-    #     # l_skip_sum = ElemwiseSumLayer(skip_layers)
+    #     l_skip_sum = ElemwiseSumLayer(skip_layers)
     #
-    #     mean_nn = DenseLayer(l_current, num_units=self.z_dim, nonlinearity=linear, b=None)
+    #     mean_nn = DenseLayer(l_skip_sum, num_units=self.z_dim, nonlinearity=linear, b=None)
     #
-    #     cov_nn = DenseLayer(l_current, num_units=self.z_dim, nonlinearity=elu_plus_one, b=None)
+    #     cov_nn = DenseLayer(l_skip_sum, num_units=self.z_dim, nonlinearity=elu_plus_one, b=None)
     #
     #     return mean_nn, cov_nn
 
