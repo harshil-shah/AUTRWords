@@ -28,13 +28,8 @@ class RecModel(object):
 
         X_embedded *= T.shape_padright(mask)
 
-        # X_embedded = theano.printing.Print('X_embedded')(X_embedded)
-
         means = get_output(self.mean_nn, X_embedded)  # N * dim(z)
         covs = get_output(self.cov_nn, X_embedded)  # N * dim(z)
-
-        # means = theano.printing.Print('means')(means)
-        # covs = theano.printing.Print('covs')(covs)
 
         return means, covs
 
@@ -54,8 +49,6 @@ class RecModel(object):
             samples = T.tile(means, [num_samples] + [1]*(means.ndim - 1))  # (S*N) * dim(z)
         else:
             samples = self.dist_z.get_samples(num_samples, [means, covs])  # (S*N) * dim(z)
-
-        # samples = theano.printing.Print('samples')(samples)
 
         return samples
 
@@ -86,16 +79,7 @@ class RecModel(object):
 
         means, covs = self.get_means_and_covs(X, X_embedded)
 
-        log_covs = -0.5 * T.sum(T.log(covs), axis=range(1, means.ndim))
-        # log_covs = theano.printing.Print('kl_log_covs')(log_covs)
-        minus_covs = -0.5 * -T.sum(covs, axis=range(1, means.ndim))
-        # minus_covs = theano.printing.Print('kl_minus_covs')(minus_covs)
-        minus_means_sq = -0.5 * -T.sum((means**2), axis=range(1, means.ndim))
-        # minus_means_sq = theano.printing.Print('kl_minus_means_sq')(minus_means_sq)
-
-        kl = -0.5 + log_covs + minus_covs + minus_means_sq
-
-        # kl = -0.5 * T.sum(1. + T.log(covs) - covs - (means**2), axis=range(1, means.ndim))
+        kl = -0.5 * T.sum(T.ones_like(means) + T.log(covs) - covs - (means**2), axis=range(1, means.ndim))
 
         return kl
 

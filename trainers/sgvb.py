@@ -80,7 +80,7 @@ class SGVBWords(object):
         elbo, kl = self.symbolic_elbo(x, num_samples, beta)
 
         params = self.generative_model.get_params() + self.recognition_model.get_params() + [self.all_embeddings]
-        grads = T.grad(-elbo, params)
+        grads = T.grad(-elbo, params, disconnected_inputs='ignore')
 
         if grad_norm_constraint is not None:
             grads = [norm_constraint(g, grad_norm_constraint) if g.ndim > 1 else g for g in grads]

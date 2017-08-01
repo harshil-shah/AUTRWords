@@ -8,9 +8,6 @@ from lasagne.updates import adam
 from data_processing.utilities import chunker
 
 
-np.random.seed(1234)
-
-
 class RunWords(object):
 
     def __init__(self, solver, solver_kwargs, valid_vocab, main_dir, out_dir, dataset, load_param_dir=None,
@@ -93,7 +90,11 @@ class RunWords(object):
 
         words_to_return = np.concatenate(word_arrays)
 
+        np.random.seed(1234)
+
         training_mask = np.random.rand(len(words_to_return)) < train_prop
+
+        np.random.seed()
 
         return words_to_return[training_mask], words_to_return[~training_mask], L[training_mask], L[~training_mask]
 
