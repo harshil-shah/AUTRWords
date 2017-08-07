@@ -88,6 +88,8 @@ class RunWords(object):
 
             del L_i, word_array
 
+        del words
+
         words_to_return = np.concatenate(word_arrays)
 
         np.random.seed(1234)
@@ -102,9 +104,15 @@ class RunWords(object):
 
         return elbo_fn(x)
 
-    def call_optimiser(self, optimiser, x, beta):
+    def call_optimiser(self, optimiser, x, beta, drop_mask):
 
-        return optimiser(x, beta)
+        if drop_mask is None:
+
+            return optimiser(x, beta)
+
+        else:
+
+            return optimiser(x, beta, drop_mask)
 
     def get_generate_output_prior(self, num_outputs):
 
@@ -175,8 +183,8 @@ class RunWords(object):
 
         print('='*10)
 
-    def train(self, n_iter, batch_size, num_samples, grad_norm_constraint=None, update=adam, update_kwargs=None,
-              warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0, val_print_gen=5,
+    def train(self, n_iter, batch_size, num_samples, char_drop=None, grad_norm_constraint=None, update=adam,
+              update_kwargs=None, warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0, val_print_gen=5,
               save_params_every=None):
 
         if self.pre_trained:
@@ -202,14 +210,23 @@ class RunWords(object):
 
             beta = 1. if warm_up is None or i > warm_up else float(i) / warm_up
 
-            elbo, kl = self.call_optimiser(optimiser, batch, beta)
+            if char_drop is not None:
+                L = np.array([self.L_train[ind] for ind in batch_indices])
+                drop_indices = np.array([np.random.permutation(np.arange(i))[:int(np.floor(char_drop*i))] for i in L])
+                drop_mask = np.ones_like(batch)
+                for n in range(len(drop_indices)):
+                    drop_mask[n][drop_indices[n]] = 0.
+            else:
+                drop_mask = None
+
+            elbo, kl = self.call_optimiser(optimiser, batch, beta, drop_mask)
 
             print('Iteration ' + str(i + 1) + ': ELBO = ' + str(elbo/batch_size) + ' (KL = ' + str(kl/batch_size) +
                   ') per data point (time taken = ' + str(time.clock() - start) + ' seconds)')
 
             if val_freq is not None and i % val_freq == 0:
 
-                val_batch_indices = np.random.choice(len(self.X_test), val_batch_size, replace=False)
+                val_batch_indices = np.random.choice(len(self.X_test), val_batch_size)
                 val_batch = np.array([self.X_test[ind] for ind in val_batch_indices])
 
                 val_elbo, val_kl = self.call_elbo_fn(elbo_fn, val_batch)
