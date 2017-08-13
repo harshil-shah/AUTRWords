@@ -1,5 +1,5 @@
 from model.distributions import GaussianDiagonal, Categorical
-from model.generative_models import GenAUTRWords as GenerativeModel
+from model.generative_models import GenAUTRWordsCanvasFeedback as GenerativeModel
 from model.recognition_models import RecMLP as RecognitionModel
 
 import json
@@ -12,7 +12,7 @@ from trainers.sgvb import SGVBWords as SGVB
 from run import RunWords as Run
 
 import numpy as np
-np.set_printoptions(threshold=1000000)
+np.set_printoptions(threshold=3000000)
 
 
 sys.setrecursionlimit(5000000)
@@ -22,7 +22,7 @@ main_dir = sys.argv[1]
 out_dir = sys.argv[2]
 
 
-dataset = 'WikipediaWestbury/processed_vocab20000_2to200_limunk0.0'
+dataset = 'BookCorpus/processed_vocab20000_4to500_limunk0.4'
 
 with open(os.path.join(main_dir, '../_datasets', dataset, 'valid_vocab.txt'), 'r') as f:
     valid_vocab = json.loads(f.read())
@@ -33,27 +33,27 @@ solver = SGVB
 
 vocab_size = len(valid_vocab)
 restrict_min_length = 1
-restrict_max_length = 10
+restrict_max_length = 20
 train_prop = 0.9
 
 d_z = 50
 d_emb = 300
 
 gen_nn_kwargs = {
-    'rnn_depth': 2,
+    'rnn_depth': 1,
     'rnn_hid_units': 500,
-    'rnn_hid_nonlinearity': lasagne.nonlinearities.elu,
-    'rnn_time_steps': 5,
+    'rnn_hid_nonlinearity': lasagne.nonlinearities.tanh,
+    'rnn_time_steps': 15,
 }
 
 rec_nn_kwargs = {
     'depth': 4,
     'hid_units': 1000,
     'hid_nonlinearity': lasagne.nonlinearities.tanh,
-    # 'rnn_hid_dim': 1000,
-    # 'final_depth': 3,
-    # 'final_hid_units': 1000,
-    # 'final_hid_nonlinearity': lasagne.nonlinearities.elu,
+    # 'rnn_hid_dim': 500,
+    # 'final_depth': 1,
+    # 'final_hid_units': 500,
+    # 'final_hid_nonlinearity': lasagne.nonlinearities.tanh,
 }
 
 solver_kwargs = {'generative_model': GenerativeModel,
@@ -69,14 +69,15 @@ solver_kwargs = {'generative_model': GenerativeModel,
                  }
 
 pre_trained = False
-load_param_dir = 'code_outputs/2017_06_26_20_07_56'
+load_param_dir = 'code_outputs/2017_07_31_23_23_18'
 
 train = True
 
-training_iterations = 250000
+training_iterations = 1000000
 training_batch_size = 200
 training_num_samples = 1
-warm_up = 25000
+warm_up = 10000
+char_drop = None
 
 grad_norm_constraint = None
 update = lasagne.updates.adam
@@ -121,9 +122,9 @@ if __name__ == '__main__':
 
     if train:
         run.train(n_iter=training_iterations, batch_size=training_batch_size, num_samples=training_num_samples,
-                  grad_norm_constraint=grad_norm_constraint, update=update, update_kwargs=update_kwargs,
-                  val_freq=val_freq, val_batch_size=val_batch_size, val_num_samples=val_num_samples, warm_up=warm_up,
-                  save_params_every=save_params_every)
+                  char_drop=char_drop, grad_norm_constraint=grad_norm_constraint, update=update,
+                  update_kwargs=update_kwargs, val_freq=val_freq, val_batch_size=val_batch_size,
+                  val_num_samples=val_num_samples, warm_up=warm_up, save_params_every=save_params_every)
 
     if generate_output_prior or generate_output_posterior:
         run.generate_output(prior=generate_output_prior, posterior=generate_output_posterior, num_outputs=num_outputs)

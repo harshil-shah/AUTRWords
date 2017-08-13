@@ -38,6 +38,9 @@ class RunWords(object):
 
         if self.pre_trained:
 
+            with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'rb') as f:
+                self.vb.all_embeddings.set_value(cPickle.load(f))
+
             with open(os.path.join(self.load_param_dir, 'gen_params.save'), 'rb') as f:
                 self.vb.generative_model.set_param_values(cPickle.load(f))
 
@@ -114,19 +117,20 @@ class RunWords(object):
 
             return optimiser(x, beta, drop_mask)
 
-    def get_generate_output_prior(self, num_outputs):
+    def get_generate_output_prior(self, num_outputs, beam_size):
 
-        return self.vb.generate_output_prior_fn(num_outputs)
+        return self.vb.generate_output_prior_fn(num_outputs, beam_size)
 
     def call_generate_output_prior(self, generate_output_prior):
 
-        z, x_gen_sampled, x_gen_argmax = generate_output_prior()
+        z, x_gen_sampled, x_gen_argmax, x_gen_beam = generate_output_prior()
 
         out = OrderedDict()
 
         out['generated_z_prior'] = z
         out['generated_x_sampled_prior'] = x_gen_sampled
         out['generated_x_argmax_prior'] = x_gen_argmax
+        out['generated_x_beam_prior'] = x_gen_beam
 
         return out
 
@@ -134,6 +138,7 @@ class RunWords(object):
 
         x_gen_sampled = output_prior['generated_x_sampled_prior']
         x_gen_argmax = output_prior['generated_x_argmax_prior']
+        x_gen_beam = output_prior['generated_x_beam_prior']
 
         print('='*10)
 
@@ -141,18 +146,19 @@ class RunWords(object):
 
             print('gen x sampled: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_sampled[n]]))
             print(' gen x argmax: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_argmax[n]]))
+            print('   gen x beam: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_beam[n]]))
 
             print('-'*10)
 
         print('='*10)
 
-    def get_generate_output_posterior(self):
+    def get_generate_output_posterior(self, beam_size):
 
-        return self.vb.generate_output_posterior_fn()
+        return self.vb.generate_output_posterior_fn(beam_size)
 
     def call_generate_output_posterior(self, generate_output_posterior, x):
 
-        z, x_gen_sampled, x_gen_argmax = generate_output_posterior(x)
+        z, x_gen_sampled, x_gen_argmax, x_gen_beam = generate_output_posterior(x)
 
         out = OrderedDict()
 
@@ -160,6 +166,7 @@ class RunWords(object):
         out['generated_z_posterior'] = z
         out['generated_x_sampled_posterior'] = x_gen_sampled
         out['generated_x_argmax_posterior'] = x_gen_argmax
+        out['generated_x_beam_posterior'] = x_gen_beam
 
         return out
 
@@ -168,6 +175,7 @@ class RunWords(object):
         x = output_posterior['true_x_for_posterior']
         x_gen_sampled = output_posterior['generated_x_sampled_posterior']
         x_gen_argmax = output_posterior['generated_x_argmax_posterior']
+        x_gen_beam = output_posterior['generated_x_beam_posterior']
 
         valid_vocab_for_true = self.valid_vocab + ['']
 
@@ -178,6 +186,7 @@ class RunWords(object):
             print('       true x: ' + ' '.join([valid_vocab_for_true[i] for i in x[n]]).strip())
             print('gen x sampled: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_sampled[n]]))
             print(' gen x argmax: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_argmax[n]]))
+            print('   gen x beam: ' + ' '.join([self.valid_vocab[int(i)] for i in x_gen_beam[n]]))
 
             print('-'*10)
 
@@ -185,7 +194,7 @@ class RunWords(object):
 
     def train(self, n_iter, batch_size, num_samples, char_drop=None, grad_norm_constraint=None, update=adam,
               update_kwargs=None, warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0, val_print_gen=5,
-              save_params_every=None):
+              val_beam_size=15, save_params_every=None):
 
         if self.pre_trained:
             with open(os.path.join(self.load_param_dir, 'updates.save'), 'rb') as f:
@@ -198,8 +207,8 @@ class RunWords(object):
 
         elbo_fn = self.vb.elbo_fn(val_num_samples)
 
-        generate_output_prior = self.get_generate_output_prior(val_print_gen)
-        generate_output_posterior = self.get_generate_output_posterior()
+        generate_output_prior = self.get_generate_output_prior(val_print_gen, val_beam_size)
+        generate_output_posterior = self.get_generate_output_posterior(val_beam_size)
 
         for i in range(n_iter):
 
@@ -219,20 +228,21 @@ class RunWords(object):
             else:
                 drop_mask = None
 
-            elbo, kl = self.call_optimiser(optimiser, batch, beta, drop_mask)
+            elbo, kl, pp = self.call_optimiser(optimiser, batch, beta, drop_mask)
 
             print('Iteration ' + str(i + 1) + ': ELBO = ' + str(elbo/batch_size) + ' (KL = ' + str(kl/batch_size) +
-                  ') per data point (time taken = ' + str(time.clock() - start) + ' seconds)')
+                  ') (PP = ' + str(pp/batch_size) + ') per data point (time taken = ' + str(time.clock() - start) +
+                  ' seconds)')
 
             if val_freq is not None and i % val_freq == 0:
 
                 val_batch_indices = np.random.choice(len(self.X_test), val_batch_size)
                 val_batch = np.array([self.X_test[ind] for ind in val_batch_indices])
 
-                val_elbo, val_kl = self.call_elbo_fn(elbo_fn, val_batch)
+                val_elbo, val_kl, val_pp = self.call_elbo_fn(elbo_fn, val_batch)
 
                 print('Test set ELBO = ' + str(val_elbo/val_batch_size) + ' (KL = ' + str(kl/batch_size) +
-                      ') per data point')
+                      ') (PP = ' + str(val_pp/batch_size) + ') per data point')
 
                 output_prior = self.call_generate_output_prior(generate_output_prior)
 
@@ -247,6 +257,9 @@ class RunWords(object):
 
             if save_params_every is not None and i % save_params_every == 0 and i > 0:
 
+                with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'wb') as f:
+                    cPickle.dump(self.vb.all_embeddings, f, protocol=cPickle.HIGHEST_PROTOCOL)
+
                 with open(os.path.join(self.out_dir, 'gen_params.save'), 'wb') as f:
                     cPickle.dump(self.vb.generative_model.get_param_values(), f, protocol=cPickle.HIGHEST_PROTOCOL)
 
@@ -255,6 +268,9 @@ class RunWords(object):
 
                 with open(os.path.join(self.out_dir, 'updates.save'), 'wb') as f:
                     cPickle.dump(updates, f, protocol=cPickle.HIGHEST_PROTOCOL)
+
+        with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'wb') as f:
+            cPickle.dump(self.vb.all_embeddings, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
         with open(os.path.join(self.out_dir, 'gen_params.save'), 'wb') as f:
             cPickle.dump(self.vb.generative_model.get_param_values(), f, protocol=cPickle.HIGHEST_PROTOCOL)
@@ -312,11 +328,11 @@ class RunWords(object):
 
         print('Test set ELBO = ' + str(elbo))
 
-    def generate_output(self, prior, posterior, num_outputs):
+    def generate_output(self, prior, posterior, num_outputs, beam_size):
 
         if prior:
 
-            generate_output_prior = self.vb.generate_output_prior_fn(num_outputs, only_final=False)
+            generate_output_prior = self.vb.generate_output_prior_fn(num_outputs, beam_size)
 
             output_prior = self.call_generate_output_prior(generate_output_prior)
 
@@ -325,7 +341,7 @@ class RunWords(object):
 
         if posterior:
 
-            generate_output_posterior = self.vb.generate_output_posterior_fn(only_final=False)
+            generate_output_posterior = self.vb.generate_output_posterior_fn(beam_size)
 
             batch_indices = np.random.choice(len(self.X_train), num_outputs, replace=False)
             batch_in = np.array([self.X_train[ind] for ind in batch_indices])

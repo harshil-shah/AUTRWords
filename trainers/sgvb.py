@@ -47,7 +47,7 @@ class SGVBWords(object):
 
         z = self.recognition_model.get_samples(x, x_embedded, num_samples)  # (S*N) * dim(z)
 
-        log_p_x = self.generative_model.log_p_x(x, x_embedded, z, self.all_embeddings)  # (S*N)
+        log_p_x, pp = self.generative_model.log_p_x(x, x_embedded, z, self.all_embeddings)  # (S*N)
 
         kl = self.recognition_model.kl_std_gaussian(x, x_embedded)  # N
 
@@ -56,16 +56,16 @@ class SGVBWords(object):
         else:
             elbo = T.sum(((1. / num_samples) * log_p_x) - (beta * kl))
 
-        return elbo, T.sum(kl)
+        return elbo, T.sum(kl), T.sum((1./num_samples) * pp)
 
     def elbo_fn(self, num_samples):
 
         x = T.imatrix('x')  # N * max(L)
 
-        elbo, kl = self.symbolic_elbo(x, num_samples)
+        elbo, kl, pp = self.symbolic_elbo(x, num_samples)
 
         elbo_fn = theano.function(inputs=[x],
-                                  outputs=[elbo, kl],
+                                  outputs=[elbo, kl, pp],
                                   allow_input_downcast=True,
                                   )
 
@@ -77,7 +77,7 @@ class SGVBWords(object):
 
         beta = T.scalar('beta')
 
-        elbo, kl = self.symbolic_elbo(x, num_samples, beta)
+        elbo, kl, pp = self.symbolic_elbo(x, num_samples, beta)
 
         params = self.generative_model.get_params() + self.recognition_model.get_params() + [self.all_embeddings]
         grads = T.grad(-elbo, params, disconnected_inputs='ignore')
@@ -95,7 +95,7 @@ class SGVBWords(object):
                 u.set_value(v.get_value())
 
         optimiser = theano.function(inputs=[x, beta],
-                                    outputs=[elbo, kl],
+                                    outputs=[elbo, kl, pp],
                                     updates=updates,
                                     allow_input_downcast=True,
                                     on_unused_input='ignore',
@@ -103,11 +103,11 @@ class SGVBWords(object):
 
         return optimiser, updates
 
-    def generate_output_prior_fn(self, num_samples):
+    def generate_output_prior_fn(self, num_samples, beam_size):
 
-        return self.generative_model.generate_output_prior_fn(self.all_embeddings, num_samples)
+        return self.generative_model.generate_output_prior_fn(self.all_embeddings, num_samples, beam_size)
 
-    def generate_output_posterior_fn(self):
+    def generate_output_posterior_fn(self, beam_size):
 
         x = T.imatrix('x')  # N * max(L)
 
@@ -115,7 +115,7 @@ class SGVBWords(object):
 
         z = self.recognition_model.get_samples(x, x_embedded, 1, means_only=True)  # N * dim(z) matrix
 
-        return self.generative_model.generate_output_posterior_fn(x, z, self.all_embeddings)
+        return self.generative_model.generate_output_posterior_fn(x, z, self.all_embeddings, beam_size)
 
 
 class SGVBStanfordWords(SGVBWords):
@@ -137,7 +137,7 @@ class SGVBStanfordWords(SGVBWords):
         else:
             x_embedded_dropped = x_embedded * T.shape_padright(drop_mask)
 
-        log_p_x = self.generative_model.log_p_x(x, x_embedded, x_embedded_dropped, z, self.all_embeddings)  # (S*N)
+        log_p_x, pp = self.generative_model.log_p_x(x, x_embedded, x_embedded_dropped, z, self.all_embeddings)  # (S*N)
 
         kl = self.recognition_model.kl_std_gaussian(x, x_embedded)  # N
 
@@ -146,7 +146,7 @@ class SGVBStanfordWords(SGVBWords):
         else:
             elbo = T.sum(((1. / num_samples) * log_p_x) - (beta * kl))
 
-        return elbo, T.sum(kl)
+        return elbo, T.sum(kl), T.sum((1./num_samples) * pp)
 
     def optimiser(self, num_samples, grad_norm_constraint, update, update_kwargs, saved_update=None):
 
@@ -156,7 +156,7 @@ class SGVBStanfordWords(SGVBWords):
 
         drop_mask = T.matrix('drop_mask')  # N * max(L)
 
-        elbo, kl = self.symbolic_elbo(x, num_samples, beta, drop_mask)
+        elbo, kl, pp = self.symbolic_elbo(x, num_samples, beta, drop_mask)
 
         params = self.generative_model.get_params() + self.recognition_model.get_params() + [self.all_embeddings]
         grads = T.grad(-elbo, params, disconnected_inputs='ignore')
@@ -174,7 +174,7 @@ class SGVBStanfordWords(SGVBWords):
                 u.set_value(v.get_value())
 
         optimiser = theano.function(inputs=[x, beta, drop_mask],
-                                    outputs=[elbo, kl],
+                                    outputs=[elbo, kl, pp],
                                     updates=updates,
                                     allow_input_downcast=True,
                                     on_unused_input='ignore',
