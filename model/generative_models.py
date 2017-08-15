@@ -3,7 +3,7 @@ import theano
 import theano.tensor as T
 from lasagne.layers import ConcatLayer, DenseLayer, ElemwiseSumLayer, get_all_param_values, get_all_params, get_output, \
     InputLayer, LSTMLayer, NonlinearityLayer, RecurrentLayer, set_all_param_values
-from lasagne.nonlinearities import linear, sigmoid, tanh
+from lasagne.nonlinearities import sigmoid, tanh
 
 from .utilities import last_d_softmax
 
@@ -419,9 +419,10 @@ class GenAUTRWords(object):
 
         return canvases, canvas_gate_sums
 
-    def get_probs(self, x, z, canvases, all_embeddings, mode='all'):
+    def get_probs(self, x, x_dropped, z, canvases, all_embeddings, mode='all'):
         """
         :param x: (S*N) * max(L) * E tensor
+        :param x_dropped: (S*N) * max(L) * E tensor
         :param z: (S*N) * dim(z) matrix
         :param canvases: (S*N) * max(L) * E matrix
         :param all_embeddings: D * E matrix
@@ -433,7 +434,8 @@ class GenAUTRWords(object):
 
         SN = x.shape[0]
 
-        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x], axis=1)[:, :-1]  # (S*N) * max(L) * E
+        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x_dropped], axis=1)[:, :-1]  # (S*N) *
+        # max(L) * E
 
         z_rep = T.tile(T.shape_padaxis(z, 1), (1, self.max_length, 1))
 
@@ -457,10 +459,11 @@ class GenAUTRWords(object):
 
         return probs
 
-    def log_p_x(self, x, x_embedded, z, all_embeddings):
+    def log_p_x(self, x, x_embedded, x_embedded_dropped, z, all_embeddings):
         """
         :param x: N * max(L) tensor
         :param x_embedded: N * max(L) * E tensor
+        :param x_embedded_dropped: N * max(L) * E tensor
         :param z: (S*N) * dim(z) matrix
         :param all_embeddings: D * E matrix
 
@@ -473,10 +476,12 @@ class GenAUTRWords(object):
         x_rep_padding_mask = T.switch(T.lt(x_rep, 0), 0, 1)  # (S*N) * max(L)
 
         x_embedded_rep = T.tile(x_embedded, (S, 1, 1))  # (S*N) * max(L) * E
+        x_embedded_dropped_rep = T.tile(x_embedded_dropped, (S, 1, 1))  # (S*N) * max(L) * E
 
         canvases = self.get_canvases(z)[0]
 
-        probs = self.get_probs(x_embedded_rep, z, canvases, all_embeddings, mode='true')  # (S*N) * max(L)
+        probs = self.get_probs(x_embedded_rep, x_embedded_dropped_rep, z, canvases, all_embeddings, mode='true')
+        # (S*N) * max(L)
         probs += T.cast(1.e-15, 'float32')  # (S*N) * max(L)
 
         log_p_x = T.sum(x_rep_padding_mask * T.log(probs), axis=-1)  # (S*N)
@@ -576,8 +581,8 @@ class GenAUTRWords(object):
 
             x_prev_sampled_embedded = self.embedder(x_prev_sampled, all_embeddings)  # N * max(L) * E
 
-            probs_sampled = self.get_probs(x_prev_sampled_embedded, z, canvases, all_embeddings, mode='all')  # N *
-            # max(L) * D
+            probs_sampled = self.get_probs(x_prev_sampled_embedded, x_prev_sampled_embedded, z, canvases,
+                                           all_embeddings, mode='all')  # N * max(L) * D
 
             x_sampled_one_hot = self.dist_x.get_samples([T.shape_padaxis(probs_sampled[:, l], 1)])  # N * 1 * D
 
@@ -589,8 +594,8 @@ class GenAUTRWords(object):
 
             x_prev_argmax_embedded = self.embedder(x_prev_argmax, all_embeddings)  # N * max(L) * E
 
-            probs_argmax = self.get_probs(x_prev_argmax_embedded, z, canvases, all_embeddings, mode='all')  # N *
-            # max(L) *  D
+            probs_argmax = self.get_probs(x_prev_argmax_embedded, x_prev_argmax_embedded, z, canvases, all_embeddings,
+                                          mode='all')  # N * max(L) * D
 
             x_argmax_l = T.argmax(probs_argmax[:, l], axis=-1)  # N
 
@@ -1230,9 +1235,10 @@ class GenAUTRWordsAttentiveWriting(GenAUTRWords):
 
         return read_attention_softmax
 
-    def get_probs(self, x, z, canvases, all_embeddings, mode='all'):
+    def get_probs(self, x, x_dropped, z, canvases, all_embeddings, mode='all'):
         """
         :param x: (S*N) * max(L) * E tensor
+        :param x_dropped: (S*N) * max(L) * E tensor
         :param z: (S*N) * dim(z) matrix
         :param canvases: (S*N) * max(L) * E matrix
         :param all_embeddings: D * E matrix
@@ -1244,11 +1250,12 @@ class GenAUTRWordsAttentiveWriting(GenAUTRWords):
 
         SN = x.shape[0]
 
-        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x], axis=1)[:, :-1]  # (S*N) * max(L) * E
+        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x_dropped], axis=1)[:, :-1]  # (S*N) *
+        # max(L) * E
 
         read_attention = self.read_attention(z)  # (S*N) * max(L) * max(L)
 
-        total_written = T.batched_dot(read_attention, x)  # (S*N) * max(L) * E
+        total_written = T.batched_dot(read_attention, x_dropped)  # (S*N) * max(L) * E
 
         z_rep = T.tile(T.shape_padaxis(z, 1), (1, self.max_length, 1))
 
