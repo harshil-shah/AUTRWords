@@ -38,7 +38,7 @@ class RunWords(object):
 
         if self.pre_trained:
 
-            with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'rb') as f:
+            with open(os.path.join(self.load_param_dir, 'all_embeddings.save'), 'rb') as f:
                 self.vb.all_embeddings.set_value(cPickle.load(f))
 
             with open(os.path.join(self.load_param_dir, 'gen_params.save'), 'rb') as f:
@@ -328,7 +328,7 @@ class RunWords(object):
 
         print('Test set ELBO = ' + str(elbo))
 
-    def generate_output(self, prior, posterior, num_outputs, beam_size):
+    def generate_output(self, prior, posterior, num_outputs, beam_size=15):
 
         if prior:
 
@@ -351,58 +351,85 @@ class RunWords(object):
             for key, value in output_posterior.items():
                 np.save(os.path.join(self.out_dir, key + '.npy'), value)
 
-    def impute_missing_chars(self, num_outputs, drop_rate, num_iterations):
+    def impute_missing_words(self, num_outputs, drop_rate, num_iterations, beam_size=15):
 
-        impute_missing_chars = self.vb.impute_missing_chars()
+        impute_missing_words_fn = self.vb.impute_missing_words_fn(beam_size)
 
-        batch_indices = np.random.choice(len(self.X_train), num_outputs, replace=False)
-        batch_in = np.array([self.X_train[ind] for ind in batch_indices])
-        L_in = [self.L_train[ind] for ind in batch_indices]
+        batch_indices = np.random.choice(len(self.X_test), num_outputs, replace=False)
+        batch_in = np.array([self.X_test[ind] for ind in batch_indices])
+        L_in = [self.L_test[ind] for ind in batch_indices]
 
-        missing_chars = [np.random.choice(l, size=int(round(drop_rate*l)), replace=False) for l in L_in]
-        missing_chars_mask = [[0 if l in array else 1 for l in range(self.max_length)] for array in missing_chars]
-        missing_chars_mask = np.array(missing_chars_mask)
+        missing_words = [np.random.choice(l, size=int(round(drop_rate*l)), replace=False) for l in L_in]
 
-        best_guess_rand = np.random.rand(num_outputs, self.max_length, self.solver_kwargs['vocab_size'])
-        best_guess = np.equal(best_guess_rand, np.amax(best_guess_rand, axis=-1, keepdims=True))
+        for n in range(num_outputs):
 
-        char_index_gen = self.valid_vocab
-        char_index_true = ' ' + char_index_gen
+            missing_words_n = []
+
+            for m in missing_words[n]:
+
+                if m-1 not in missing_words_n and m+1 not in missing_words_n:
+
+                    missing_words_n.append(m)
+
+            missing_words[n] = missing_words_n
+
+        print(missing_words)
+
+        missing_words_mask = [[0 if l in array else 1 for l in range(self.max_length)] for array in missing_words]
+        missing_words_mask = np.array(missing_words_mask)
+
+        best_guess = batch_in * missing_words_mask
+
+        valid_vocab = self.valid_vocab + ['']
 
         for i in range(num_iterations):
 
             start = time.clock()
 
-            best_guess = impute_missing_chars(batch_in, missing_chars_mask, best_guess)
+            best_guess = impute_missing_words_fn(best_guess, missing_words_mask)
+
+            num_missing_words = np.sum(np.ones_like(missing_words_mask) - missing_words_mask)
+
+            num_correct_words = 0
+
+            for n in range(num_outputs):
+                num_correct_words_n = sum([1 if batch_in[n][l] == best_guess[n][l] else 0 for l in missing_words[n]])
+                num_correct_words += num_correct_words_n
+
+            prop_correct_words = float(num_correct_words) / num_missing_words
+
+            print('Missing words iteration ' + str(i + 1) + ': prop correct words = ' + str(prop_correct_words) +
+                  ' (time taken = ' + str(time.clock() - start) + ' seconds)')
+
+            print(' ')
 
             print('Iteration ' + str(i+1) + ' (time taken = ' + str(time.clock() - start) + ' seconds)')
             print(' ')
             ind_to_print = np.random.randint(num_outputs)
-            print(''.join([char_index_true[i] for i in batch_in[ind_to_print]]))
-            print(''.join([char_index_true[int(batch_in[ind_to_print][i])] if i not in missing_chars[ind_to_print]
-                           else '_' for i in range(len(batch_in[ind_to_print]))]))
-            print(''.join([char_index_gen[int(np.argmax(i))] for i in best_guess[ind_to_print]]))
+            print(' '.join([valid_vocab[i] for i in batch_in[ind_to_print]]))
+            print(' '.join([valid_vocab[int(batch_in[ind_to_print][i])] if i not in missing_words[ind_to_print]
+                            else '_'*len(valid_vocab[int(batch_in[ind_to_print][i])])
+                            for i in range(len(batch_in[ind_to_print]))]))
+            print(' '.join([valid_vocab[i] for i in best_guess[ind_to_print]]))
             print(' ')
 
-        num_missing_chars = len([item for sublist in missing_chars for item in sublist])
+        num_missing_words = np.sum(np.ones_like(missing_words_mask) - missing_words_mask)
 
-        best_guess_chars = np.argmax(best_guess, axis=2)
-
-        num_correct_chars = 0
+        num_correct_words = 0
 
         for n in range(num_outputs):
-            num_correct_chars_n = sum([1 if batch_in[n, l] == best_guess_chars[n, l] else 0 for l in missing_chars[n]])
-            num_correct_chars += num_correct_chars_n
+            num_correct_words_n = sum([1 if batch_in[n][l] == best_guess[n][l] else 0 for l in missing_words[n]])
+            num_correct_words += num_correct_words_n
 
-        prop_correct_chars = float(num_correct_chars) / num_missing_chars
+        prop_correct_words = float(num_correct_words) / num_missing_words
 
-        print('proportion correct characters = ' + str(prop_correct_chars))
+        print('proportion correct words = ' + str(prop_correct_words))
 
         out = OrderedDict()
 
-        out['true_X_for_misschar'] = batch_in
-        out['misschar_missing_chars'] = missing_chars
-        out['misschar_X'] = best_guess
+        out['true_x_for_missing_words'] = batch_in
+        out['missing_words'] = missing_words
+        out['generated_x_for_missing_words'] = best_guess
 
         for key, value in out.items():
             np.save(os.path.join(self.out_dir, key + '.npy'), value)

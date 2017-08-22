@@ -324,13 +324,10 @@ class GenAUTRWords(object):
         W_h_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.nn_canvas_rnn_hid_units,
                                                                      self.embedding_dim))))
 
-        W_Cg_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.max_length, self.embedding_dim))))
-
-        W_x_to_x = theano.shared(np.float32(np.random.normal(0., 0.1, (self.max_length,
-                                                                       self.z_dim + 2*self.embedding_dim,
+        W_x_to_x = theano.shared(np.float32(np.random.normal(0., 0.1, (self.z_dim + 2*self.embedding_dim,
                                                                        self.embedding_dim))))
 
-        canvas_update_params = [W_h_Cg, W_h_Cu, W_Cg_Cu, W_x_to_x]
+        canvas_update_params = [W_h_Cg, W_h_Cu, W_x_to_x]
 
         return canvas_update_params
 
@@ -371,7 +368,7 @@ class GenAUTRWords(object):
         canvas_init = T.zeros((hiddens.shape[0], self.max_length, self.embedding_dim))  # N * max(L) * E
         gate_sum_init = T.zeros((hiddens.shape[0], self.max_length))  # N * max(L)
 
-        def step(h_t, canvas_tm1, canvas_gate_sum_tm1, W_h_Cg, W_h_Cu, W_Cg_Cu):
+        def step(h_t, canvas_tm1, canvas_gate_sum_tm1, W_h_Cg, W_h_Cu):
 
             pre_softmax_gate = T.dot(h_t, W_h_Cg)  # N * max(L)
 
@@ -383,7 +380,7 @@ class GenAUTRWords(object):
             canvas_gate_sum = canvas_gate_sum_tm1 + canvas_gate  # N * max(L)
             canvas_gate_reshape = T.shape_padright(canvas_gate)  # N * max(L) * 1
 
-            canvas_update = T.dot(h_t, W_h_Cu) + T.dot(canvas_gate, W_Cg_Cu)  # N * E
+            canvas_update = T.dot(h_t, W_h_Cu)  # N * E
             canvas_update = T.shape_padaxis(canvas_update, 1)  # N * 1 * E
 
             canvas_new = ((1. - canvas_gate_reshape) * canvas_tm1) + (canvas_gate_reshape * canvas_update)  # N * max(L)
@@ -394,7 +391,7 @@ class GenAUTRWords(object):
         ([canvases, canvas_gate_sums], _) = theano.scan(step,
                                                         sequences=[hiddens.dimshuffle((1, 0, 2))],
                                                         outputs_info=[canvas_init, gate_sum_init],
-                                                        non_sequences=self.canvas_update_params[:3],
+                                                        non_sequences=self.canvas_update_params[:2],
                                                         )
 
         return canvases[-1], canvas_gate_sums[-1]
@@ -437,11 +434,10 @@ class GenAUTRWords(object):
         x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x_dropped], axis=1)[:, :-1]  # (S*N) *
         # max(L) * E
 
-        z_rep = T.tile(T.shape_padaxis(z, 1), (1, self.max_length, 1))
+        z_rep = T.tile(T.shape_padaxis(z, 1), (1, self.max_length, 1))  # (S*N) * max(L) * dim(z)
 
-        target_embeddings = T.batched_dot(T.concatenate((z_rep, x_pre_padded, canvases), axis=-1).dimshuffle((1, 0, 2)),
-                                          self.canvas_update_params[-1]).dimshuffle((1, 0, 2))
-        # (S*N) * max(L) * E
+        target_embeddings = T.dot(T.concatenate((z_rep, x_pre_padded, canvases), axis=-1),
+                                  self.canvas_update_params[-1])  # (S*N) * max(L) * E
 
         probs_numerators = T.sum(x * target_embeddings, axis=-1)  # (S*N) * max(L)
 
@@ -504,7 +500,7 @@ class GenAUTRWords(object):
         best_edges_0 = T.zeros((N, self.vocab_size))  # N * D
         active_words_0 = -T.ones((N, beam_size))  # N * B
 
-        def step_forward(canvases_l, W_x_to_x_l, best_scores_lm1, best_edges_lm1, active_words_lm1, all_embeddings,
+        def step_forward(canvases_l, best_scores_lm1, best_edges_lm1, active_words_lm1, W_x_to_x, all_embeddings,
                          z_rep):
 
             active_words_lm1_embedded = self.embedder(T.cast(active_words_lm1, 'int32'), all_embeddings)  # N * B * E
@@ -512,8 +508,7 @@ class GenAUTRWords(object):
             target_embeddings = T.dot(T.concatenate((z_rep, active_words_lm1_embedded,
                                                      T.tile(T.shape_padaxis(canvases_l, 1), (1, beam_size, 1))),
                                                     axis=-1),
-                                      W_x_to_x_l)
-            # N * B * E
+                                      W_x_to_x)  # N * B * E
 
             probs_denominators = T.dot(target_embeddings, all_embeddings.T)  # N * B * D
 
@@ -535,11 +530,11 @@ class GenAUTRWords(object):
             return best_scores_l, T.cast(best_edges_l, 'float32'), T.cast(active_words_l, 'float32')
 
         ([best_scores, best_edges, active_words], _) = theano.scan(step_forward,
-                                                                   sequences=[canvases.dimshuffle((1, 0, 2)),
-                                                                              self.canvas_update_params[-1]],
+                                                                   sequences=[canvases.dimshuffle((1, 0, 2))],
                                                                    outputs_info=[best_scores_0, best_edges_0,
                                                                                  active_words_0],
-                                                                   non_sequences=[all_embeddings, z_rep]
+                                                                   non_sequences=[self.canvas_update_params[-1],
+                                                                                  all_embeddings, z_rep]
                                                                    )
         # max(L) * N * B and max(L) * N * D and max(L) * N * B
 
@@ -720,160 +715,15 @@ class GenAUTRWords(object):
             self.canvas_update_params[i].set_value(canvas_update_params_vals[i])
 
 
-class GenAUTRWordsTwoStepCanvasWriting(GenAUTRWords):
-
-    def init_canvas_update_params(self):
-
-        W_h_Cg = theano.shared(np.float32(np.random.normal(0., 0.1, (self.nn_canvas_rnn_hid_units, self.max_length))))
-        W_h_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.nn_canvas_rnn_hid_units,
-                                                                     self.embedding_dim))))
-
-        W_Cg_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.max_length, self.embedding_dim))))
-
-        W_x_to_x = theano.shared(np.float32(np.random.normal(0., 0.1, (3*self.embedding_dim, self.embedding_dim))))
-
-        canvas_update_params = [W_h_Cg, W_h_Cu, W_Cg_Cu, W_x_to_x]
-
-        return canvas_update_params
-
-    def get_probs(self, x, z, canvases, all_embeddings, mode='all'):
-        """
-        :param x: (S*N) * max(L) * E tensor
-        :param z: (S*N) * dim(z) matrix
-        :param canvases: (S*N) * max(L) * E matrix
-        :param all_embeddings: D * E matrix
-        :param mode: 'all' returns probabilities for every element in the vocabulary, 'true' returns only the
-        probability for the true word.
-
-        :return probs: (S*N) * max(L) * D tensor or (S*N) * max(L) matrix
-        """
-
-        SN = x.shape[0]
-
-        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x], axis=1)[:, :-1]  # (S*N) * max(L) * E
-
-        canvases_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), canvases], axis=1)[:, :-1]  # (S*N) *
-        # max(L) * E
-
-        target_embeddings = T.dot(T.concatenate((x_pre_padded, canvases_pre_padded, canvases), axis=-1),
-                                  self.canvas_update_params[-1])
-        # (S*N) * max(L) * E
-
-        probs_numerators = T.sum(x * target_embeddings, axis=-1)  # (S*N) * max(L)
-
-        probs_denominators = T.dot(target_embeddings, all_embeddings.T)  # (S*N) * max(L) * D
-
-        if mode == 'all':
-            probs = last_d_softmax(probs_denominators)  # (S*N) * max(L) * D
-        elif mode == 'true':
-            probs_numerators -= T.max(probs_denominators, axis=-1)
-            probs_denominators -= T.max(probs_denominators, axis=-1, keepdims=True)
-
-            probs = T.exp(probs_numerators) / T.sum(T.exp(probs_denominators), axis=-1)  # (S*N) * max(L)
-        else:
-            raise Exception("mode must be in ['all', 'true']")
-
-        return probs
-
-    def beam_search(self, z, all_embeddings, beam_size):
-
-        N = z.shape[0]
-
-        canvases = self.get_canvases(z)[0]  # N * max(L) * E
-
-        canvases_pre_padded = T.concatenate([T.zeros((N, 1, self.embedding_dim)), canvases], axis=1)[:, :-1]  # N *
-        # max(L) * E
-
-        best_scores_0 = T.zeros((N, beam_size))  # N * B
-        best_edges_0 = T.zeros((N, self.vocab_size))  # N * D
-        active_words_0 = -T.ones((N, beam_size))  # N * B
-
-        def step_forward(l, best_scores_lm1, best_edges_lm1, active_words_lm1, all_embeddings, W_x_to_x):
-
-            canvases_lm1 = canvases_pre_padded[:, l]  # N * E
-            canvases_l = canvases[:, l]  # N * E
-
-            active_words_lm1_embedded = self.embedder(T.cast(active_words_lm1, 'int32'), all_embeddings)  # N * B * E
-
-            target_embeddings = T.dot(T.concatenate((active_words_lm1_embedded,
-                                                     T.tile(T.shape_padaxis(canvases_lm1, 1), (1, beam_size, 1)),
-                                                     T.tile(T.shape_padaxis(canvases_l, 1), (1, beam_size, 1))),
-                                                    axis=-1),
-                                      W_x_to_x)
-            # N * B * E
-
-            probs_denominators = T.dot(target_embeddings, all_embeddings.T)  # N * B * D
-
-            probs = last_d_softmax(probs_denominators)  # N * B * D
-
-            scores = T.shape_padright(best_scores_lm1) + T.log(probs)  # N * B * D
-
-            best_scores_l_all = T.max(scores, axis=1)  # N * D
-
-            best_scores_l = T.sort(best_scores_l_all, axis=-1)[:, -beam_size:]  # N * B
-
-            active_words_l = T.argsort(best_scores_l_all, axis=-1)[:, -beam_size:]  # N * B
-
-            best_edges_l_beam_inds = T.argmax(scores, axis=1)  # N * D
-
-            best_edges_l = active_words_lm1[T.repeat(T.arange(N), self.vocab_size), best_edges_l_beam_inds.flatten()]
-            best_edges_l = best_edges_l.reshape((N, self.vocab_size))  # N * D
-
-            return best_scores_l, T.cast(best_edges_l, 'float32'), T.cast(active_words_l, 'float32')
-
-        ([best_scores, best_edges, active_words], _) = theano.scan(step_forward,
-                                                                   sequences=T.arange(self.max_length),
-                                                                   outputs_info=[best_scores_0, best_edges_0,
-                                                                                 active_words_0],
-                                                                   non_sequences=[all_embeddings,
-                                                                                  self.canvas_update_params[-1]]
-                                                                   )
-        # max(L) * N * B and max(L) * N * D and max(L) * N * B
-
-        words_L = active_words[-1, :, -1]  # N
-
-        def step_backward(best_edges_l, words_lp1):
-
-            words_l = best_edges_l[T.arange(N), T.cast(words_lp1, 'int32')]  # N
-
-            return words_l
-
-        words, _ = theano.scan(step_backward,
-                               sequences=best_edges[1:][::-1],
-                               outputs_info=[words_L],
-                               )
-
-        words = words[::-1]  # (max(L)-1) * N
-
-        words = T.concatenate([words, T.shape_padleft(words_L)], axis=0).T  # N * max(L)
-
-        return T.cast(words, 'int32')
-
-
-class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
+class GenAUTRWordsCustomWxx(GenAUTRWords):
 
     def __init__(self, z_dim, max_length, vocab_size, embedding_dim, embedder, dist_z, dist_x, nn_kwargs):
 
         super().__init__(z_dim, max_length, vocab_size, embedding_dim, embedder, dist_z, dist_x, nn_kwargs)
 
-        self.read_attention_nn = self.read_attention_nn_fn()
+        self.read_multiplier_nn = self.read_multiplier_nn_fn()
 
-    def init_canvas_update_params(self):
-
-        W_h_Cg = theano.shared(np.float32(np.random.normal(0., 0.1, (self.nn_canvas_rnn_hid_units, self.max_length))))
-        W_h_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.nn_canvas_rnn_hid_units,
-                                                                     self.embedding_dim))))
-
-        W_Cg_Cu = theano.shared(np.float32(np.random.normal(0., 0.1, (self.max_length, self.embedding_dim))))
-
-        W_x_to_x = theano.shared(np.float32(np.random.normal(0., 0.1, (self.z_dim + 3*self.embedding_dim,
-                                                                       self.embedding_dim))))
-
-        canvas_update_params = [W_h_Cg, W_h_Cu, W_Cg_Cu, W_x_to_x]
-
-        return canvas_update_params
-
-    def read_attention_nn_fn(self):
+    def read_multiplier_nn_fn(self):
 
         l_in = InputLayer((None, self.z_dim))
 
@@ -881,13 +731,14 @@ class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
 
         l_2 = DenseLayer(l_1, num_units=self.nn_canvas_rnn_hid_units, nonlinearity=tanh)
 
-        l_out = DenseLayer(l_2, num_units=self.max_length**2, nonlinearity=None)
+        l_out = DenseLayer(l_2, num_units=self.max_length*self.embedding_dim, nonlinearity=None)
 
         return l_out
 
-    def get_probs(self, x, z, canvases, all_embeddings, mode='all'):
+    def get_probs(self, x, x_dropped, z, canvases, all_embeddings, mode='all'):
         """
         :param x: (S*N) * max(L) * E tensor
+        :param x_dropped: (S*N) * max(L) * E tensor
         :param z: (S*N) * dim(z) matrix
         :param canvases: (S*N) * max(L) * E matrix
         :param all_embeddings: D * E matrix
@@ -899,18 +750,18 @@ class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
 
         SN = x.shape[0]
 
-        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x], axis=1)[:, :-1]  # (S*N) * max(L) * E
+        x_pre_padded = T.concatenate([T.zeros((SN, 1, self.embedding_dim)), x_dropped], axis=1)[:, :-1]  # (S*N) *
+        # max(L) * E
+
+        read_multiplier = get_output(self.read_multiplier_nn, z).reshape((SN, self.max_length, self.embedding_dim))
+        # (S*N) * max(L) * E
+
+        x_read = read_multiplier * x_pre_padded  # (S*N) * max(L) * E
 
         z_rep = T.tile(T.shape_padaxis(z, 1), (1, self.max_length, 1))
 
-        read_attention = last_d_softmax(get_output(self.read_attention_nn, z).reshape((SN, self.max_length,
-                                                                                       self.max_length)))  # (S*N) *
-        # max(L) * max(L)
-
-        canvases_read = T.batched_dot(read_attention, canvases)  # (S*N) * max(L) * E
-
-        target_embeddings = T.dot(T.concatenate((z_rep, x_pre_padded, canvases, canvases_read), axis=-1),
-                                  self.canvas_update_params[-1])  # (S*N) * max(L) * E
+        target_embeddings = T.dot(T.concatenate((z_rep, x_read, canvases), axis=-1),  self.canvas_update_params[-1])
+        # (S*N) * max(L) * E
 
         probs_numerators = T.sum(x * target_embeddings, axis=-1)  # (S*N) * max(L)
 
@@ -936,27 +787,24 @@ class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
 
         canvases = self.get_canvases(z)[0]  # N * max(L) * E
 
-        read_attention = last_d_softmax(get_output(self.read_attention_nn, z).reshape((N, self.max_length,
-                                                                                       self.max_length)))  # N * max(L)
-        # * max(L)
-
-        canvases_read = T.batched_dot(read_attention, canvases)  # (S*N) * max(L) * E
+        read_multiplier = get_output(self.read_multiplier_nn, z).reshape((N, self.max_length, self.embedding_dim))  # N
+        # * max(L) * E
 
         best_scores_0 = T.zeros((N, beam_size))  # N * B
         best_edges_0 = T.zeros((N, self.vocab_size))  # N * D
         active_words_0 = -T.ones((N, beam_size))  # N * B
 
-        def step_forward(canvases_l, canvases_read_l, best_scores_lm1, best_edges_lm1, active_words_lm1, all_embeddings,
-                         z_rep, W_x_to_x):
+        def step_forward(canvases_l, read_multiplier_l, best_scores_lm1, best_edges_lm1, active_words_lm1, W_x_to_x,
+                         all_embeddings, z_rep):
 
             active_words_lm1_embedded = self.embedder(T.cast(active_words_lm1, 'int32'), all_embeddings)  # N * B * E
 
-            target_embeddings = T.dot(T.concatenate((z_rep, active_words_lm1_embedded,
-                                                     T.tile(T.shape_padaxis(canvases_l, 1), (1, beam_size, 1)),
-                                                     T.tile(T.shape_padaxis(canvases_read_l, 1), (1, beam_size, 1))),
+            active_words_lm1_read = T.shape_padaxis(read_multiplier_l, 1) * active_words_lm1_embedded  # N * B * E
+
+            target_embeddings = T.dot(T.concatenate((z_rep, active_words_lm1_read,
+                                                     T.tile(T.shape_padaxis(canvases_l, 1), (1, beam_size, 1))),
                                                     axis=-1),
-                                      W_x_to_x)
-            # N * B * E
+                                      W_x_to_x)  # N * B * E
 
             probs_denominators = T.dot(target_embeddings, all_embeddings.T)  # N * B * D
 
@@ -979,11 +827,11 @@ class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
 
         ([best_scores, best_edges, active_words], _) = theano.scan(step_forward,
                                                                    sequences=[canvases.dimshuffle((1, 0, 2)),
-                                                                              canvases_read.dimshuffle((1, 0, 2))],
+                                                                              read_multiplier.dimshuffle((1, 0, 2))],
                                                                    outputs_info=[best_scores_0, best_edges_0,
                                                                                  active_words_0],
-                                                                   non_sequences=[all_embeddings, z_rep,
-                                                                                  self.canvas_update_params[-1]]
+                                                                   non_sequences=[self.canvas_update_params[-1],
+                                                                                  all_embeddings, z_rep]
                                                                    )
         # max(L) * N * B and max(L) * N * D and max(L) * N * B
 
@@ -1010,26 +858,27 @@ class GenAUTRWordsCanvasAttentiveWriting(GenAUTRWords):
 
         canvas_rnn_params = get_all_params(self.canvas_rnn, trainable=True)
 
-        read_attention_nn_params = get_all_params(self.read_attention_nn, trainable=True)
+        read_multiplier_nn_params = get_all_params(self.read_multiplier_nn, trainable=True)
 
-        return canvas_rnn_params + read_attention_nn_params + self.canvas_update_params
+        return canvas_rnn_params + read_multiplier_nn_params + self.canvas_update_params
 
     def get_param_values(self):
 
         canvas_rnn_params_vals = get_all_param_values(self.canvas_rnn)
 
-        read_attention_nn_params_vals = get_all_param_values(self.read_attention_nn)
+        read_multiplier_nn_params_vals = get_all_param_values(self.read_multiplier_nn)
 
         canvas_update_params_vals = [p.get_value() for p in self.canvas_update_params]
 
-        return [canvas_rnn_params_vals, read_attention_nn_params_vals, canvas_update_params_vals]
+        return [canvas_rnn_params_vals, read_multiplier_nn_params_vals, canvas_update_params_vals]
 
     def set_param_values(self, param_values):
 
-        [canvas_rnn_params_vals, read_attention_nn_params_vals, canvas_update_params_vals] = param_values
+        [canvas_rnn_params_vals, read_multiplier_nn_params_vals, canvas_update_params_vals] = param_values
 
         set_all_param_values(self.canvas_rnn, canvas_rnn_params_vals)
-        set_all_param_values(self.read_attention_nn, read_attention_nn_params_vals)
+
+        set_all_param_values(self.read_multiplier_nn, read_multiplier_nn_params_vals)
 
         for i in range(len(self.canvas_update_params)):
             self.canvas_update_params[i].set_value(canvas_update_params_vals[i])
@@ -1335,6 +1184,86 @@ class GenAUTRWordsAttentiveWriting(GenAUTRWords):
 
         ([best_scores, active_paths], _) = theano.scan(step_forward,
                                                        sequences=T.arange(self.max_length),
+                                                       outputs_info=[best_scores_0, active_paths_init],
+                                                       non_sequences=[canvases, all_embeddings,
+                                                                      self.canvas_update_params[-1], z_rep]
+                                                       )
+        # max(L) * N * B and max(L) * N * B * max(L)
+
+        active_paths = active_paths[-1]  # N * B * max(L)
+
+        words = active_paths[:, -1]  # N * max(L)
+
+        return T.cast(words, 'int32')
+
+    def impute_missing_words(self, z, x_best_guess, missing_words_mask, all_embeddings, beam_size):
+
+        N = z.shape[0]
+
+        z_rep = T.tile(T.shape_padaxis(z, 1), (1, beam_size, 1))  # N * B * dim(z)
+
+        canvases = self.get_canvases(z)[0]  # N * max(L) * E
+
+        best_scores_0 = T.zeros((N, beam_size))  # N * B
+        active_paths_init = -T.ones((N, beam_size, self.max_length))  # N * B * max(L)
+
+        read_attention = self.read_attention(z)  # N * max(L) * max(L)
+
+        def step_forward(l, x_best_guess_l, missing_words_mask_l, best_scores_lm1, active_paths_current, canvases,
+                         all_embeddings, W_x_to_x, z_rep):
+
+            canvases_l = canvases[:, l]
+
+            active_paths_current_embedded = self.embedder(T.cast(active_paths_current, 'int32'), all_embeddings)  # N *
+            # B * max(L) * E
+
+            total_written = T.batched_dot(T.tile(read_attention, (beam_size, 1, 1)),
+                                          active_paths_current_embedded.reshape((N*beam_size, self.max_length,
+                                                                                 self.embedding_dim))
+                                          ).reshape((N, beam_size, self.max_length, self.embedding_dim))[:, :, l]  # N *
+            # B * E
+
+            target_embeddings = T.dot(T.concatenate((z_rep, total_written, active_paths_current_embedded[:, :, l-1],
+                                                     T.tile(T.shape_padaxis(canvases_l, 1), (1, beam_size, 1))),
+                                                    axis=-1),
+                                      W_x_to_x)  # N * B * E
+
+            probs_denominators = T.dot(target_embeddings, all_embeddings.T)  # N * B * D
+
+            probs = last_d_softmax(probs_denominators)  # N * B * D
+
+            scores = T.shape_padright(best_scores_lm1) + T.log(probs)  # N * B * D
+
+            best_scores_l_all = T.max(scores, axis=1)  # N * D
+
+            best_scores_l = T.sort(best_scores_l_all, axis=-1)[:, -beam_size:]  # N * B
+
+            best_scores_l_known = best_scores_l_all[T.arange(N), x_best_guess_l]  # N
+
+            best_scores_l = T.switch(T.eq(T.shape_padright(missing_words_mask_l), 0.), best_scores_l,
+                                     T.shape_padright(best_scores_l_known))  # N * B
+
+            active_words_l = T.argsort(best_scores_l_all, axis=1)[:, -beam_size:]  # N * B
+
+            active_words_l = T.switch(T.eq(T.shape_padright(missing_words_mask_l), 0.), active_words_l,
+                                      T.shape_padright(x_best_guess_l))  # N * B
+
+            best_paths_l_all = T.argmax(scores, axis=1)  # N * D
+
+            best_paths_l_inds = best_paths_l_all[T.repeat(T.arange(N), beam_size), active_words_l.flatten()]  # (N*B)
+            best_paths_l_inds = best_paths_l_inds.reshape((N, beam_size))  # N * B
+
+            best_paths_l = active_paths_current[T.repeat(T.arange(N), beam_size), best_paths_l_inds.flatten()]  # (N*B)
+            # * max(L)
+            best_paths_l = best_paths_l.reshape((N, beam_size, self.max_length))  # N * B * max(L)
+
+            active_paths_new = T.set_subtensor(best_paths_l[:, :, l], active_words_l)
+
+            return best_scores_l, active_paths_new
+
+        ([best_scores, active_paths], _) = theano.scan(step_forward,
+                                                       sequences=[T.arange(self.max_length), x_best_guess.T,
+                                                                  missing_words_mask.T],
                                                        outputs_info=[best_scores_0, active_paths_init],
                                                        non_sequences=[canvases, all_embeddings,
                                                                       self.canvas_update_params[-1], z_rep]

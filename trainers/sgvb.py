@@ -123,3 +123,22 @@ class SGVBWords(object):
         z = self.recognition_model.get_samples(x, x_embedded, 1, means_only=True)  # N * dim(z) matrix
 
         return self.generative_model.generate_output_posterior_fn(x, z, self.all_embeddings, beam_size)
+
+    def impute_missing_words_fn(self, beam_size):
+
+        x_best_guess = T.imatrix('x_best_guess')  # N * max(L)
+
+        missing_words_mask = T.matrix('drop_mask')  # N * max(L)
+
+        x_best_guess_embedded = self.embedder(x_best_guess, self.all_embeddings)  # N * max(L) * E
+
+        z = self.recognition_model.get_samples(x_best_guess, x_best_guess_embedded, 1, means_only=True)  # N *
+        # dim(z)
+
+        x_best_guess_new = self.generative_model.impute_missing_words(z, x_best_guess, missing_words_mask,
+                                                                      self.all_embeddings, beam_size)  # N * max(L)
+
+        return theano.function(inputs=[x_best_guess, missing_words_mask],
+                               outputs=x_best_guess_new,
+                               allow_input_downcast=True,
+                               )
