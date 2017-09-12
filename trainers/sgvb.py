@@ -57,9 +57,9 @@ class SGVBWords(object):
         kl = self.recognition_model.kl_std_gaussian(x, x_embedded)  # N
 
         if beta is None:
-            elbo = T.sum(((1. / num_samples) * log_p_x) - kl)
+            elbo = T.sum((1. / num_samples) * log_p_x) - T.sum(kl)
         else:
-            elbo = T.sum(((1. / num_samples) * log_p_x) - (beta * kl))
+            elbo = T.sum((1. / num_samples) * log_p_x) - T.sum(beta * kl)
 
         return elbo, T.sum(kl), T.sum((1./num_samples) * pp)
 
@@ -110,11 +110,12 @@ class SGVBWords(object):
 
         return optimiser, updates
 
-    def generate_output_prior_fn(self, num_samples, beam_size):
+    def generate_output_prior_fn(self, num_samples, beam_size, num_time_steps=None):
 
-        return self.generative_model.generate_output_prior_fn(self.all_embeddings, num_samples, beam_size)
+        return self.generative_model.generate_output_prior_fn(self.all_embeddings, num_samples, beam_size,
+                                                              num_time_steps)
 
-    def generate_output_posterior_fn(self, beam_size):
+    def generate_output_posterior_fn(self, beam_size, num_time_steps=None):
 
         x = T.imatrix('x')  # N * max(L)
 
@@ -122,7 +123,21 @@ class SGVBWords(object):
 
         z = self.recognition_model.get_samples(x, x_embedded, 1, means_only=True)  # N * dim(z) matrix
 
-        return self.generative_model.generate_output_posterior_fn(x, z, self.all_embeddings, beam_size)
+        return self.generative_model.generate_output_posterior_fn(x, z, self.all_embeddings, beam_size, num_time_steps)
+
+    def generate_canvases_prior_fn(self, num_samples, beam_size):
+
+        time_steps = self.generative_model.nn_canvas_rnn_time_steps
+
+        z = T.matrix('z')  # S * dim(z)
+
+        fns = []
+
+        for t in range(time_steps):
+
+            fns.append(self.generative_model.generate_canvas_prior_fn(z, self.all_embeddings, beam_size, t+1))
+
+        return fns
 
     def impute_missing_words_fn(self, beam_size):
 
@@ -142,3 +157,22 @@ class SGVBWords(object):
                                outputs=x_best_guess_new,
                                allow_input_downcast=True,
                                )
+
+    def follow_latent_trajectory_fn(self, num_samples, beam_size):
+
+        alphas = T.vector('alphas')
+
+        return self.generative_model.follow_latent_trajectory_fn(self.all_embeddings, alphas, num_samples, beam_size)
+
+    def find_best_matches_fn(self):
+
+        sentences_in = T.imatrix('sentences_in')  # S * max(L) matrix
+        sentences_eval = T.imatrix('sentences_eval')  # N * max(L) matrix
+
+        sentences_in_embedded = self.embedder(sentences_in, self.all_embeddings)  # S * max(L) * E
+        sentences_eval_embedded = self.embedder(sentences_eval, self.all_embeddings)  # N * max(L) * E
+
+        z = self.recognition_model.get_samples(sentences_in, sentences_in_embedded, 1, means_only=True)  # S * dim(z)
+
+        return self.generative_model.find_best_matches_fn(sentences_in, sentences_eval, sentences_eval_embedded, z,
+                                                          self.all_embeddings)

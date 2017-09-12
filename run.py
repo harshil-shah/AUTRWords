@@ -39,7 +39,7 @@ class RunWords(object):
         if self.pre_trained:
 
             with open(os.path.join(self.load_param_dir, 'all_embeddings.save'), 'rb') as f:
-                self.vb.all_embeddings.set_value(cPickle.load(f))
+                self.vb.all_embeddings = cPickle.load(f)
 
             with open(os.path.join(self.load_param_dir, 'gen_params.save'), 'rb') as f:
                 self.vb.generative_model.set_param_values(cPickle.load(f))
@@ -84,7 +84,7 @@ class RunWords(object):
 
             L_i = L[i: i+load_batch_size]
 
-            word_array = np.full((len(L_i), max_L), -1, dtype='int')
+            word_array = np.full((len(L_i), max_L), -1, dtype='int32')
             word_array[L_i.reshape((L_i.shape[0], 1)) > np.arange(max(L))] = np.concatenate(words[i: i+load_batch_size])
 
             word_arrays.append(word_array)
@@ -98,8 +98,6 @@ class RunWords(object):
         np.random.seed(1234)
 
         training_mask = np.random.rand(len(words_to_return)) < train_prop
-
-        np.random.seed()
 
         return words_to_return[training_mask], words_to_return[~training_mask], L[training_mask], L[~training_mask]
 
@@ -123,7 +121,7 @@ class RunWords(object):
 
     def call_generate_output_prior(self, generate_output_prior):
 
-        z, x_gen_sampled, x_gen_argmax, x_gen_beam = generate_output_prior()
+        z, x_gen_sampled, x_gen_argmax, x_gen_beam, attention_beam = generate_output_prior()
 
         out = OrderedDict()
 
@@ -131,6 +129,7 @@ class RunWords(object):
         out['generated_x_sampled_prior'] = x_gen_sampled
         out['generated_x_argmax_prior'] = x_gen_argmax
         out['generated_x_beam_prior'] = x_gen_beam
+        out['generated_attention_beam_prior'] = attention_beam
 
         return out
 
@@ -287,6 +286,7 @@ class RunWords(object):
 
         elbo = 0
         kl = 0
+        pp = 0
 
         batches_complete = 0
 
@@ -296,16 +296,17 @@ class RunWords(object):
 
             if sub_sample_size is None:
 
-                elbo_batch, kl_batch = self.call_elbo_fn(elbo_fn, batch_X)
+                elbo_batch, kl_batch, pp_batch = self.call_elbo_fn(elbo_fn, batch_X[0])
 
             else:
 
                 elbo_batch = 0
                 kl_batch = 0
+                pp_batch = 0
 
-                for sub_sample in range(1, (num_samples / sub_sample_size) + 1):
+                for sub_sample in range(1, int(num_samples / sub_sample_size) + 1):
 
-                    elbo_sub_batch, kl_sub_batch = self.call_elbo_fn(elbo_fn, batch_X)
+                    elbo_sub_batch, kl_sub_batch, pp_sub_batch = self.call_elbo_fn(elbo_fn, batch_X[0])
 
                     elbo_batch = (elbo_batch * (float((sub_sample * sub_sample_size) - sub_sample_size) /
                                                 float(sub_sample * sub_sample_size))) + \
@@ -315,16 +316,21 @@ class RunWords(object):
                                             float(sub_sample * sub_sample_size))) + \
                                (kl_sub_batch * float(sub_sample_size / float(sub_sample * sub_sample_size)))
 
+                    pp_batch = (pp_batch * (float((sub_sample * sub_sample_size) - sub_sample_size) /
+                                            float(sub_sample * sub_sample_size))) + \
+                               (pp_sub_batch * float(sub_sample_size / float(sub_sample * sub_sample_size)))
+
             elbo += elbo_batch
             kl += kl_batch
+            pp += pp_batch
 
             batches_complete += 1
 
             print('Tested batches ' + str(batches_complete) + ' of ' + str(round(self.X_test.shape[0] / batch_size))
-                  + '; test set ELBO so far = ' + str(elbo) + ' (' + str(kl) + ')'
-                  + ' / ' + str(elbo / (batches_complete * batch_size)) + ' ('
-                  + str(kl / (batches_complete * batch_size)) + ') per obs.'
-                  + ' (time taken = ' + str(time.clock() - start) + ' seconds)')
+                  + 'so far; test set ELBO = ' + str(elbo) + ', test set KL = ' + str(kl) + ', test set perplexity = '
+                  + str(pp) + ' / ' + str(elbo / (batches_complete * batch_size)) + ', '
+                  + str(kl / (batches_complete * batch_size)) + ', ' + str(pp / (batches_complete * batch_size))
+                  + ' per obs. (time taken = ' + str(time.clock() - start) + ' seconds)')
 
         print('Test set ELBO = ' + str(elbo))
 
@@ -343,6 +349,8 @@ class RunWords(object):
 
             generate_output_posterior = self.vb.generate_output_posterior_fn(beam_size)
 
+            np.random.seed(1234)
+
             batch_indices = np.random.choice(len(self.X_train), num_outputs, replace=False)
             batch_in = np.array([self.X_train[ind] for ind in batch_indices])
 
@@ -351,7 +359,31 @@ class RunWords(object):
             for key, value in output_posterior.items():
                 np.save(os.path.join(self.out_dir, key + '.npy'), value)
 
+    def generate_canvases(self, num_outputs, beam_size=15):
+
+        z = np.random.standard_normal(size=(num_outputs, self.solver_kwargs['z_dim']))
+
+        generate_canvas_prior_fns = self.vb.generate_canvases_prior_fn(num_outputs, beam_size)
+
+        T = self.solver_kwargs['gen_nn_kwargs']['rnn_time_steps']
+
+        for t in range(T):
+
+            out = OrderedDict()
+
+            out_canvases_prior = generate_canvas_prior_fns[t](z)
+
+            out['generated_x_sampled_prior'] = out_canvases_prior[1]
+            out['generated_x_argmax_prior'] = out_canvases_prior[2]
+            out['generated_x_beam_prior'] = out_canvases_prior[3]
+            out['generated_attention_beam_prior'] = out_canvases_prior[4]
+
+            for key, value in out.items():
+                np.save(os.path.join(self.out_dir, key + '_' + str(t+1) + '.npy'), value)
+
     def impute_missing_words(self, num_outputs, drop_rate, num_iterations, beam_size=15):
+
+        np.random.seed(1234)
 
         impute_missing_words_fn = self.vb.impute_missing_words_fn(beam_size)
 
@@ -436,6 +468,8 @@ class RunWords(object):
 
     def find_best_matches(self, num_outputs, num_matches, batch_size):
 
+        np.random.seed(1234)
+
         sentences_indices = np.random.choice(len(self.X_test), num_outputs, replace=False)
         sentences = np.array([self.X_test[ind] for ind in sentences_indices])
 
@@ -475,20 +509,21 @@ class RunWords(object):
         for key, value in out.items():
             np.save(os.path.join(self.out_dir, key + '.npy'), value)
 
-    def follow_latent_trajectory(self, num_samples, num_steps):
+    def follow_latent_trajectory(self, num_samples, num_steps, beam_size=15):
 
-        follow_latent_trajectory = self.vb.follow_latent_trajectory_fn(num_samples)
+        follow_latent_trajectory = self.vb.follow_latent_trajectory_fn(num_samples, beam_size)
 
         step_size = 1. / (num_steps - 1)
 
         alphas = np.arange(0., 1. + step_size, step_size)
 
-        chars, probs = follow_latent_trajectory(alphas)
+        x_gen_sampled, x_gen_argmax, x_gen_beam = follow_latent_trajectory(alphas)
 
         out = OrderedDict()
 
-        out['follow_traj_X_viterbi'] = chars
-        out['follow_traj_probs_viterbi'] = probs
+        out['generated_x_sampled_traj'] = x_gen_sampled
+        out['generated_x_argmax_traj'] = x_gen_argmax
+        out['generated_x_beam_traj'] = x_gen_beam
 
         for key, value in out.items():
             np.save(os.path.join(self.out_dir, key + '.npy'), value)
