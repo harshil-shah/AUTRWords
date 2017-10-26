@@ -39,7 +39,7 @@ class RunWords(object):
         if self.pre_trained:
 
             with open(os.path.join(self.load_param_dir, 'all_embeddings.save'), 'rb') as f:
-                self.vb.all_embeddings = cPickle.load(f)
+                self.vb.all_embeddings.set_value(cPickle.load(f))
 
             with open(os.path.join(self.load_param_dir, 'gen_params.save'), 'rb') as f:
                 self.vb.generative_model.set_param_values(cPickle.load(f))
@@ -191,7 +191,7 @@ class RunWords(object):
 
         print('='*10)
 
-    def train(self, n_iter, batch_size, num_samples, char_drop=None, grad_norm_constraint=None, update=adam,
+    def train(self, n_iter, batch_size, num_samples, word_drop=None, grad_norm_constraint=None, update=adam,
               update_kwargs=None, warm_up=None, val_freq=None, val_batch_size=0, val_num_samples=0, val_print_gen=5,
               val_beam_size=15, save_params_every=None):
 
@@ -218,9 +218,9 @@ class RunWords(object):
 
             beta = 1. if warm_up is None or i > warm_up else float(i) / warm_up
 
-            if char_drop is not None:
+            if word_drop is not None:
                 L = np.array([self.L_train[ind] for ind in batch_indices])
-                drop_indices = np.array([np.random.permutation(np.arange(i))[:int(np.floor(char_drop*i))] for i in L])
+                drop_indices = np.array([np.random.permutation(np.arange(i))[:int(np.floor(word_drop*i))] for i in L])
                 drop_mask = np.ones_like(batch)
                 for n in range(len(drop_indices)):
                     drop_mask[n][drop_indices[n]] = 0.
@@ -230,7 +230,7 @@ class RunWords(object):
             elbo, kl, pp = self.call_optimiser(optimiser, batch, beta, drop_mask)
 
             print('Iteration ' + str(i + 1) + ': ELBO = ' + str(elbo/batch_size) + ' (KL = ' + str(kl/batch_size) +
-                  ') (PP = ' + str(pp/batch_size) + ') per data point (time taken = ' + str(time.clock() - start) +
+                  ') per data point (PP = ' + str(pp) + ') (time taken = ' + str(time.clock() - start) +
                   ' seconds)')
 
             if val_freq is not None and i % val_freq == 0:
@@ -241,7 +241,7 @@ class RunWords(object):
                 val_elbo, val_kl, val_pp = self.call_elbo_fn(elbo_fn, val_batch)
 
                 print('Test set ELBO = ' + str(val_elbo/val_batch_size) + ' (KL = ' + str(kl/batch_size) +
-                      ') (PP = ' + str(val_pp/batch_size) + ') per data point')
+                      ') per data point (PP = ' + str(val_pp) + ')')
 
                 output_prior = self.call_generate_output_prior(generate_output_prior)
 
@@ -257,7 +257,7 @@ class RunWords(object):
             if save_params_every is not None and i % save_params_every == 0 and i > 0:
 
                 with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'wb') as f:
-                    cPickle.dump(self.vb.all_embeddings, f, protocol=cPickle.HIGHEST_PROTOCOL)
+                    cPickle.dump(self.vb.all_embeddings.get_value(), f, protocol=cPickle.HIGHEST_PROTOCOL)
 
                 with open(os.path.join(self.out_dir, 'gen_params.save'), 'wb') as f:
                     cPickle.dump(self.vb.generative_model.get_param_values(), f, protocol=cPickle.HIGHEST_PROTOCOL)
@@ -269,7 +269,7 @@ class RunWords(object):
                     cPickle.dump(updates, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
         with open(os.path.join(self.out_dir, 'all_embeddings.save'), 'wb') as f:
-            cPickle.dump(self.vb.all_embeddings, f, protocol=cPickle.HIGHEST_PROTOCOL)
+            cPickle.dump(self.vb.all_embeddings.get_value(), f, protocol=cPickle.HIGHEST_PROTOCOL)
 
         with open(os.path.join(self.out_dir, 'gen_params.save'), 'wb') as f:
             cPickle.dump(self.vb.generative_model.get_param_values(), f, protocol=cPickle.HIGHEST_PROTOCOL)
@@ -286,7 +286,6 @@ class RunWords(object):
 
         elbo = 0
         kl = 0
-        pp = 0
 
         batches_complete = 0
 
@@ -302,7 +301,6 @@ class RunWords(object):
 
                 elbo_batch = 0
                 kl_batch = 0
-                pp_batch = 0
 
                 for sub_sample in range(1, int(num_samples / sub_sample_size) + 1):
 
@@ -316,23 +314,20 @@ class RunWords(object):
                                             float(sub_sample * sub_sample_size))) + \
                                (kl_sub_batch * float(sub_sample_size / float(sub_sample * sub_sample_size)))
 
-                    pp_batch = (pp_batch * (float((sub_sample * sub_sample_size) - sub_sample_size) /
-                                            float(sub_sample * sub_sample_size))) + \
-                               (pp_sub_batch * float(sub_sample_size / float(sub_sample * sub_sample_size)))
-
             elbo += elbo_batch
             kl += kl_batch
-            pp += pp_batch
 
             batches_complete += 1
 
             print('Tested batches ' + str(batches_complete) + ' of ' + str(round(self.X_test.shape[0] / batch_size))
-                  + 'so far; test set ELBO = ' + str(elbo) + ', test set KL = ' + str(kl) + ', test set perplexity = '
-                  + str(pp) + ' / ' + str(elbo / (batches_complete * batch_size)) + ', '
-                  + str(kl / (batches_complete * batch_size)) + ', ' + str(pp / (batches_complete * batch_size))
-                  + ' per obs. (time taken = ' + str(time.clock() - start) + ' seconds)')
+                  + ' so far; test set ELBO = ' + str(elbo) + ', test set KL = ' + str(kl) + ' / '
+                  + str(elbo / (batches_complete * batch_size)) + ', ' + str(kl / (batches_complete * batch_size)) +
+                  ', per obs. (time taken = ' + str(time.clock() - start) + ' seconds)')
+
+        pp = np.exp(-elbo / np.sum(1 + np.minimum(self.X_test, 0)))
 
         print('Test set ELBO = ' + str(elbo))
+        print('Test set perplexity = ' + str(pp))
 
     def generate_output(self, prior, posterior, num_outputs, beam_size=15):
 
@@ -351,8 +346,8 @@ class RunWords(object):
 
             np.random.seed(1234)
 
-            batch_indices = np.random.choice(len(self.X_train), num_outputs, replace=False)
-            batch_in = np.array([self.X_train[ind] for ind in batch_indices])
+            batch_indices = np.random.choice(len(self.X_test), num_outputs, replace=False)
+            batch_in = np.array([self.X_test[ind] for ind in batch_indices])
 
             output_posterior = self.call_generate_output_posterior(generate_output_posterior, batch_in)
 

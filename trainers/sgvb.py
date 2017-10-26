@@ -7,7 +7,7 @@ from lasagne.updates import norm_constraint
 class SGVBWords(object):
 
     def __init__(self, generative_model, recognition_model, z_dim, max_length, vocab_size, embedding_dim, dist_z_gen,
-                 dist_x_gen, dist_z_rec, gen_nn_kwargs, rec_nn_kwargs):
+                 dist_x_gen, dist_z_rec, gen_nn_kwargs, rec_nn_kwargs, eos_ind):
 
         self.z_dim = z_dim
         self.max_length = max_length
@@ -26,6 +26,8 @@ class SGVBWords(object):
         self.generative_model = self.init_generative_model(generative_model)
         self.recognition_model = self.init_recognition_model(recognition_model)
 
+        self.eos_ind = eos_ind
+
     def init_generative_model(self, generative_model):
 
         return generative_model(self.z_dim, self.max_length, self.vocab_size, self.embedding_dim, self.embedder,
@@ -41,27 +43,44 @@ class SGVBWords(object):
 
         return all_embeddings[x]
 
+    def cut_off(self, x):
+
+        def step(x_l, x_lm1):
+
+            x_l = T.switch(T.eq(x_lm1, self.eos_ind), -1, x_l)
+            x_l = T.switch(T.eq(x_lm1, -1), -1, x_l)
+
+            return T.cast(x_l, 'int32')
+
+        x_cut_off, _ = theano.scan(step,
+                                   sequences=x.T,
+                                   outputs_info=T.zeros((x.shape[0],), 'int32'),
+                                   )
+
+        return x_cut_off.T
+
     def symbolic_elbo(self, x, num_samples, beta=None, drop_mask=None):
 
         x_embedded = self.embedder(x, self.all_embeddings)  # N * max(L) * E
 
-        z = self.recognition_model.get_samples(x, x_embedded, num_samples)  # (S*N) * dim(z)
+        z, kl = self.recognition_model.get_samples_and_kl_std_gaussian(x, x_embedded, num_samples)  # (S*N) * dim(z) and
+        # N
 
         if drop_mask is None:
             x_embedded_dropped = x_embedded
         else:
             x_embedded_dropped = x_embedded * T.shape_padright(drop_mask)
 
-        log_p_x, pp = self.generative_model.log_p_x(x, x_embedded, x_embedded_dropped, z, self.all_embeddings)  # (S*N)
-
-        kl = self.recognition_model.kl_std_gaussian(x, x_embedded)  # N
+        log_p_x = self.generative_model.log_p_x(x, x_embedded, x_embedded_dropped, z, self.all_embeddings)  # (S*N)
 
         if beta is None:
             elbo = T.sum((1. / num_samples) * log_p_x) - T.sum(kl)
         else:
             elbo = T.sum((1. / num_samples) * log_p_x) - T.sum(beta * kl)
 
-        return elbo, T.sum(kl), T.sum((1./num_samples) * pp)
+        pp = T.exp(-(T.sum((1. / num_samples) * log_p_x) - T.sum(kl)) / T.sum(T.switch(T.lt(x, 0), 0, 1)))
+
+        return elbo, T.sum(kl), pp
 
     def elbo_fn(self, num_samples):
 
@@ -112,8 +131,14 @@ class SGVBWords(object):
 
     def generate_output_prior_fn(self, num_samples, beam_size, num_time_steps=None):
 
-        return self.generative_model.generate_output_prior_fn(self.all_embeddings, num_samples, beam_size,
-                                                              num_time_steps)
+        outputs, updates = self.generative_model.generate_output_prior(self.all_embeddings, num_samples, beam_size,
+                                                                       num_time_steps)
+
+        return theano.function(inputs=[],
+                               outputs=outputs,
+                               updates=updates,
+                               allow_input_downcast=True,
+                               )
 
     def generate_output_posterior_fn(self, beam_size, num_time_steps=None):
 
