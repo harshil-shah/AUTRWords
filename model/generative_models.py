@@ -119,9 +119,7 @@ class GenStanfordWords(object):
 
         L = T.sum(x_rep_padding_mask, axis=1)  # (S*N)
 
-        perplexity = T.exp((-1./L) * log_p_x)  # (S*N)
-
-        return log_p_x, perplexity
+        return log_p_x
 
     def beam_search(self, z, all_embeddings, beam_size):
 
@@ -354,7 +352,7 @@ class GenStanfordWords(object):
 
         z_rep = T.extra_ops.repeat(z, repeats=N, axis=0)  # (S*N) * dim(z)
 
-        log_p_x, _ = self.log_p_x(sentences_eval_rep, sentences_eval_embedded_rep, sentences_eval_embedded_rep, z_rep,
+        log_p_x = self.log_p_x(sentences_eval_rep, sentences_eval_embedded_rep, sentences_eval_embedded_rep, z_rep,
                                   all_embeddings)  # (S*N)
 
         log_p_x = log_p_x.reshape((S, N))
