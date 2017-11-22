@@ -317,7 +317,10 @@ class CanvasRNNLayer(MergeLayer):
 
             hid_to_canvas = T.dot(hid, W_hid_to_canvas_stacked)
 
-            canvas_gate = last_d_softmax((1-canvas_gate_sum_previous)*hid_to_canvas[:, :self.max_length])
+            canvas_gate_num = T.exp(hid_to_canvas[:, :self.max_length]) * (1-canvas_gate_sum_previous)
+
+            canvas_gate = canvas_gate_num / T.sum(canvas_gate_num, axis=-1, keepdims=True)
+
             canvas_gate *= (1-canvas_gate_sum_previous)
 
             canvas_gate_sum = canvas_gate_sum_previous + canvas_gate
